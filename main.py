@@ -20,3 +20,7 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 async def vectorize_query(query: str = Query(..., min_length=1)):
     embedding = model.encode(query).tolist()
     return {"embedding": embedding}
+
+@app.get("/ping")
+async def ping():
+    return {"status": "ok"}
