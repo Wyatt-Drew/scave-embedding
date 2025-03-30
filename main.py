@@ -21,6 +21,8 @@ async def vectorize_query(query: str = Query(..., min_length=1)):
     embedding = model.encode(query).tolist()
     return {"embedding": embedding}
 
-@app.get("/ping")
-async def ping():
+@app.api_route("/ping", methods=["GET", "HEAD"])
+async def ping(request: Request):
+    if request.method == "HEAD":
+        return JSONResponse(status_code=200, content=None)
     return {"status": "ok"}
