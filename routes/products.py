@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from db import get_db
 from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from collections import Counter
+import re
 
 router = APIRouter()
 db = get_db()
@@ -9,6 +12,30 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 @router.get("/ping")
 async def ping():
     return {"status": "ok"}
+
+def cluster_and_label_products(products, n_clusters=3):
+    product_texts = [p.get("product_name", "") + " " + p.get("description", "") for p in products]
+    embeddings = model.encode(product_texts)
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    labels = kmeans.fit_predict(embeddings)
+
+    clustered = {}
+    for label, product in zip(labels, products):
+        clustered.setdefault(label, []).append(product)
+
+    labeled_clusters = []
+    for label, group in clustered.items():
+        text = " ".join([p.get("product_name", "") for p in group])
+        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+        common = Counter(words).most_common(3)
+        category = " ".join([word for word, _ in common])
+        labeled_clusters.append({
+            "category": category.title(),
+            "products": group
+        })
+
+    return labeled_clusters
 
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
@@ -68,6 +95,33 @@ async def semantic_search(query: str = Query(...)):
             "unit": price["unit"]
         })
     return response
+
+@router.get("/products/SemanticSearchClustered")
+async def semantic_search_clustered(query: str = Query(...), clusters: int = 3):
+    query_vector = model.encode(query).tolist()
+
+    try:
+        similar_products = await db.products.aggregate([
+            {
+                "$vectorSearch": {
+                    "index": "vector_index",
+                    "path": "embedding",
+                    "queryVector": query_vector,
+                    "numCandidates": 300,
+                    "limit": 50
+                }
+            }
+        ]).to_list(length=50)
+
+        if not similar_products:
+            return []
+
+        clustered = cluster_and_label_products(similar_products, n_clusters=clusters)
+        return clustered
+
+    except Exception as e:
+        print("❌ Vector search error:", str(e))
+        return {"error": str(e)}
 
 @router.get("/products/GetProduct")
 async def get_product(search: str = Query(...)):
