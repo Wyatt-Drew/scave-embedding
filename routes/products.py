@@ -13,15 +13,29 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 async def ping():
     return {"status": "ok"}
 
-def cluster_and_label_products(products, n_clusters=3):
+def cluster_and_label_products(products, max_clusters=8):
     product_texts = [p.get("product_name", "") + " " + p.get("description", "") for p in products]
     embeddings = model.encode(product_texts)
 
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    labels = kmeans.fit_predict(embeddings)
+    if len(embeddings) < 3:
+        return [{"category": "General", "products": products}]
+
+    best_k = 2
+    best_score = -1
+    for k in range(2, min(max_clusters, len(embeddings)) + 1):
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto")
+        labels = kmeans.fit_predict(embeddings)
+        score = silhouette_score(embeddings, labels)
+        if score > best_score:
+            best_score = score
+            best_k = k
+
+    # Final clustering with best_k
+    kmeans = KMeans(n_clusters=best_k, random_state=42, n_init="auto")
+    final_labels = kmeans.fit_predict(embeddings)
 
     clustered = {}
-    for label, product in zip(labels, products):
+    for label, product in zip(final_labels, products):
         clustered.setdefault(label, []).append(product)
 
     labeled_clusters = []
@@ -29,7 +43,8 @@ def cluster_and_label_products(products, n_clusters=3):
         text = " ".join([p.get("product_name", "") for p in group])
         words = re.findall(r'\b[a-z]{3,}\b', text.lower())
         common = Counter(words).most_common(3)
-        category = " ".join([word for word, _ in common])
+        category = " ".join([word for word, _ in common]) or "Other"
+
         labeled_clusters.append({
             "category": category.title(),
             "products": group
@@ -97,7 +112,7 @@ async def semantic_search(query: str = Query(...)):
     return response
 
 @router.get("/products/SemanticSearchClustered")
-async def semantic_search_clustered(query: str = Query(...), clusters: int = 3):
+async def semantic_search_clustered(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
 
     try:
@@ -116,7 +131,7 @@ async def semantic_search_clustered(query: str = Query(...), clusters: int = 3):
         if not similar_products:
             return []
 
-        clustered = cluster_and_label_products(similar_products, n_clusters=clusters)
+        clustered = cluster_and_label_products(similar_products)
         return clustered
 
     except Exception as e:
