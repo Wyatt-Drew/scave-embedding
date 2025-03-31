@@ -40,21 +40,37 @@ async def ping():
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
-    print(" Query vector (first 5):", query_vector[:5])
-    print(" Product count in DB:", await db.products.count_documents({}))
-    similar_products = await db.products.aggregate([
-        {
-            "$vectorSearch": {
-                "index": "vector_index",
-                "path": "embedding",
-                "queryVector": [float(x) for x in query_vector],
-                "numCandidates": 300,
-                "limit": 10
+
+    print("🔍 Incoming query:", query)
+    print("🔢 Query vector (first 5 dims):", query_vector[:5])
+
+    total_products = await db.products.count_documents({})
+    with_embeddings = await db.products.count_documents({"embedding": {"$exists": True}})
+    print(f"📦 Total products: {total_products}, with embeddings: {with_embeddings}")
+
+    try:
+        similar_products = await db.products.aggregate([
+            {
+                "$vectorSearch": {
+                    "index": "vector_index",
+                    "path": "embedding",
+                    "queryVector": [float(x) for x in query_vector],
+                    "numCandidates": 300,
+                    "limit": 10
+                }
             }
-        }
-    ]).to_list(length=10)
+        ]).to_list(length=10)
+        print(f"✅ Vector search returned {len(similar_products)} results.")
+    except Exception as e:
+        print("❌ Vector search failed:", str(e))
+        return {"error": str(e)}
+
+    if not similar_products:
+        print("⚠️ No similar products found.")
+        return []
 
     product_nums = [p["product_num"] for p in similar_products]
+    print("🔗 Matching product_nums:", product_nums)
 
     latest_prices = await db.prices.aggregate([
         {"$match": {"product_num": {"$in": product_nums}}},
@@ -95,4 +111,6 @@ async def semantic_search(query: str = Query(...)):
             "latest_date": price["latest_date"],
             "unit": price["unit"]
         })
+
+    print(f"🧾 Final response size: {len(response)}")
     return response
