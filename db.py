@@ -15,7 +15,7 @@ if not MONGO_URI or not DB_NAME:
 
 # Create MongoDB client and select database
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client[DB_NAME]
+db = client[DB_NAME.lower()]
 
 def get_db():
     return db
