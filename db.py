@@ -40,13 +40,14 @@ async def ping():
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
-
+    print(" Query vector (first 5):", query_vector[:5])
+    print(" Product count in DB:", await db.products.count_documents({}))
     similar_products = await db.products.aggregate([
         {
             "$vectorSearch": {
                 "index": "vector_index",
                 "path": "embedding",
-                "queryVector": query_vector,
+                "queryVector": [float(x) for x in query_vector],
                 "numCandidates": 300,
                 "limit": 10
             }
