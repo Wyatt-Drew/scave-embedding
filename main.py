@@ -1,29 +1,24 @@
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
-from fastapi.responses import JSONResponse 
+from routes.products import router as products_router
+from routes.prices import router as prices_router
+from routes.baskets import router as baskets_router
+from db import connect_to_mongo
 
 app = FastAPI()
 
-# Enable CORS so your Node backend can call this
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with Node backend URL in prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load the model once at startup
-model = SentenceTransformer("all-MiniLM-L6-v2")
+@app.on_event("startup")
+async def startup_db():
+    await connect_to_mongo()
 
-@app.get("/vectorize")
-async def vectorize_query(query: str = Query(..., min_length=1)):
-    embedding = model.encode(query).tolist()
-    return {"embedding": embedding}
-
-@app.api_route("/ping", methods=["GET", "HEAD"])
-async def ping(request: Request):
-    if request.method == "HEAD":
-        return JSONResponse(status_code=200, content=None)
-    return {"status": "ok"}
+app.include_router(products_router, prefix="/api")
+app.include_router(prices_router, prefix="/api")
+app.include_router(baskets_router, prefix="/api")
