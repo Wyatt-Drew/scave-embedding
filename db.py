@@ -2,11 +2,20 @@ import motor.motor_asyncio
 import os
 from dotenv import load_dotenv
 
+# Load variables from .env (useful for local development)
 load_dotenv()
 
+# MongoDB connection string and DB name from environment
 MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME")
+
+# Validate environment variables
+if not MONGO_URI or not DB_NAME:
+    raise ValueError("Missing MONGO_URI or DB_NAME environment variables.")
+
+# Create MongoDB client and select database
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client.get_default_database()
+db = client[DB_NAME]
 
 def get_db():
     return db
