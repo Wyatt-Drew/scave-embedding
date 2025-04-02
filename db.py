@@ -89,7 +89,15 @@ async def semantic_search(query: str = Query(...)):
 
     product_details = await db.products.find(
         {"product_num": {"$in": product_nums}},
-        {"product_num": 1, "product_name": 1, "product_brand": 1, "product_link": 1, "image_url": 1, "description": 1}
+        {
+            "product_num": 1,
+            "product_name": 1,
+            "product_brand": 1,
+            "product_link": 1,
+            "image_url": 1,
+            "description": 1,
+            "search_terms": 1
+        }
     ).to_list(length=100)
     product_map = {p["product_num"]: p for p in product_details}
 
@@ -107,6 +115,7 @@ async def semantic_search(query: str = Query(...)):
             "product_link": product.get("product_link", ""),
             "image_url": product.get("image_url", ""),
             "description": product.get("description", ""),
+            "search_terms": product.get("search_terms", []),
             "latest_price": price["latest_price"],
             "latest_date": price["latest_date"],
             "unit": price["unit"]
