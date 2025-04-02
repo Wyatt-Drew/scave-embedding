@@ -56,19 +56,36 @@ def cluster_and_label_products(products, max_clusters=8):
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
 
-    similar_products = await db.products.aggregate([
-        {
-            "$vectorSearch": {
-                "index": "vector_index",
-                "path": "embedding",
-                "queryVector": query_vector,
-                "numCandidates": 300,
-                "limit": 10
+    print("🔍 Incoming query:", query)
+    print("🔢 Query vector (first 5 dims):", query_vector[:5])
+
+    total_products = await db.products.count_documents({})
+    with_embeddings = await db.products.count_documents({"embedding": {"$exists": True}})
+    print(f"📦 Total products: {total_products}, with embeddings: {with_embeddings}")
+
+    try:
+        similar_products = await db.products.aggregate([
+            {
+                "$vectorSearch": {
+                    "index": "vector_index",
+                    "path": "embedding",
+                    "queryVector": [float(x) for x in query_vector],
+                    "numCandidates": 300,
+                    "limit": 10
+                }
             }
-        }
-    ]).to_list(length=10)
+        ]).to_list(length=10)
+        print(f"✅ Vector search returned {len(similar_products)} results.")
+    except Exception as e:
+        print("❌ Vector search failed:", str(e))
+        return {"error": str(e)}
+
+    if not similar_products:
+        print("⚠️ No similar products found.")
+        return []
 
     product_nums = [p["product_num"] for p in similar_products]
+    print("🔗 Matching product_nums:", product_nums)
 
     latest_prices = await db.prices.aggregate([
         {"$match": {"product_num": {"$in": product_nums}}},
@@ -87,7 +104,15 @@ async def semantic_search(query: str = Query(...)):
 
     product_details = await db.products.find(
         {"product_num": {"$in": product_nums}},
-        {"product_num": 1, "product_name": 1, "product_brand": 1, "product_link": 1, "image_url": 1, "description": 1}
+        {
+            "product_num": 1,
+            "product_name": 1,
+            "product_brand": 1,
+            "product_link": 1,
+            "image_url": 1,
+            "description": 1,
+            "search_terms": 1
+        }
     ).to_list(length=100)
     product_map = {p["product_num"]: p for p in product_details}
 
@@ -105,11 +130,15 @@ async def semantic_search(query: str = Query(...)):
             "product_link": product.get("product_link", ""),
             "image_url": product.get("image_url", ""),
             "description": product.get("description", ""),
+            "search_terms": product.get("search_terms", []),
             "latest_price": price["latest_price"],
             "latest_date": price["latest_date"],
             "unit": price["unit"]
         })
+
+    print(f"🧾 Final response size: {len(response)}")
     return response
+
 
 @router.get("/products/SemanticSearchClustered")
 async def semantic_search_clustered(query: str = Query(...)):
