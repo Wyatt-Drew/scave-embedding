@@ -9,10 +9,6 @@ router = APIRouter()
 db = get_db()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-@router.get("/ping")
-async def ping():
-    return {"status": "ok"}
-
 def cluster_and_label_products(products, max_clusters=8):
     product_texts = [p.get("product_name", "") + " " + p.get("description", "") for p in products]
     embeddings = model.encode(product_texts)
@@ -184,6 +180,8 @@ async def semantic_search_clustered(query: str = Query(...)):
         print("❌ Vector search error:", str(e))
         return {"error": str(e)}
 
+
+# Unused.  This was the previous search method
 @router.get("/products/GetProduct")
 async def get_product(search: str = Query(...)):
     products_cursor = db.products.find({"search_terms": search.lower()})

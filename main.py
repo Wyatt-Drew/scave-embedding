@@ -7,6 +7,10 @@ from db import connect_to_mongo
 
 app = FastAPI()
 
+@app.get("/ping")
+async def ping():
+    return {"status": "ok"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
