@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Query
 from db import get_db
 from sentence_transformers import SentenceTransformer
-from sklearn.cluster import KMeans
 from collections import Counter
 import re
 
@@ -9,44 +8,6 @@ router = APIRouter()
 db = get_db()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def cluster_and_label_products(products, max_clusters=8):
-    product_texts = [p.get("product_name", "") + " " + p.get("description", "") for p in products]
-    embeddings = model.encode(product_texts)
-
-    if len(embeddings) < 3:
-        return [{"category": "General", "products": products}]
-
-    best_k = 2
-    best_score = -1
-    for k in range(2, min(max_clusters, len(embeddings)) + 1):
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto")
-        labels = kmeans.fit_predict(embeddings)
-        score = silhouette_score(embeddings, labels)
-        if score > best_score:
-            best_score = score
-            best_k = k
-
-    # Final clustering with best_k
-    kmeans = KMeans(n_clusters=best_k, random_state=42, n_init="auto")
-    final_labels = kmeans.fit_predict(embeddings)
-
-    clustered = {}
-    for label, product in zip(final_labels, products):
-        clustered.setdefault(label, []).append(product)
-
-    labeled_clusters = []
-    for label, group in clustered.items():
-        text = " ".join([p.get("product_name", "") for p in group])
-        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
-        common = Counter(words).most_common(3)
-        category = " ".join([word for word, _ in common]) or "Other"
-
-        labeled_clusters.append({
-            "category": category.title(),
-            "products": group
-        })
-
-    return labeled_clusters
 
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
@@ -59,11 +20,11 @@ async def semantic_search(query: str = Query(...)):
                     "index": "vector_index",
                     "path": "embedding",
                     "queryVector": query_vector,
-                    "numCandidates": 1000,
-                    "limit": 600
+                    "numCandidates": 2000,
+                    "limit": 1200
                 }
             }
-        ]).to_list(length=600)
+        ]).to_list(length=1200)
 
         if not similar_products:
             return []
@@ -77,7 +38,8 @@ async def semantic_search(query: str = Query(...)):
                 "_id": {"product_num": "$product_num", "store_num": "$store_num"},
                 "latest_price": {"$first": "$amount"},
                 "latest_date": {"$first": "$date"},
-                "unit": {"$first": "$unit"}
+                "unit": {"$first": "$unit"},
+                "price_per_unit": {"$first": "$price_per_unit"}
             }}
         ]).to_list(length=1000)
 
@@ -95,7 +57,7 @@ async def semantic_search(query: str = Query(...)):
                 "image_url": 1,
                 "category_path": 1
             }
-        ).to_list(length=1000)
+        ).to_list(length=2000)
         product_map = {p["product_num"]: p for p in product_details}
 
         price_flag_filter = {
@@ -129,6 +91,7 @@ async def semantic_search(query: str = Query(...)):
                 "latest_price": price.get("latest_price"),
                 "latest_date": price.get("latest_date"),
                 "unit": price.get("unit"),
+                "price_per_unit": price.get("price_per_unit"),
                 "best_in_30d": flags.get("best_in_30d", False),
                 "best_in_90d": flags.get("best_in_90d", False),
                 "std_from_mean": flags.get("std_from_mean", None),
@@ -141,34 +104,6 @@ async def semantic_search(query: str = Query(...)):
         print("❌ Semantic search failed:", str(e))
         raise HTTPException(status_code=500, detail="Internal server error during semantic search.")
 
-
-
-@router.get("/products/SemanticSearchClustered")
-async def semantic_search_clustered(query: str = Query(...)):
-    query_vector = model.encode(query).tolist()
-
-    try:
-        similar_products = await db.products.aggregate([
-            {
-                "$vectorSearch": {
-                    "index": "vector_index",
-                    "path": "embedding",
-                    "queryVector": query_vector,
-                    "numCandidates": 300,
-                    "limit": 50
-                }
-            }
-        ]).to_list(length=50)
-
-        if not similar_products:
-            return []
-
-        clustered = cluster_and_label_products(similar_products)
-        return clustered
-
-    except Exception as e:
-        print("❌ Vector search error:", str(e))
-        return {"error": str(e)}
 
 
 @router.get("/products/GetProduct")
@@ -188,13 +123,14 @@ async def get_product(search: str = Query(...)):
             "_id": {"product_num": "$product_num", "store_num": "$store_num"},
             "latest_price": {"$first": "$amount"},
             "latest_date": {"$first": "$date"},
-            "unit": {"$first": "$unit"}
+            "unit": {"$first": "$unit"},
+            "price_per_unit": {"$first": "$price_per_unit"}
         }}
     ]).to_list(length=1000)
 
     store_nums = list({p["_id"]["store_num"] for p in latest_prices})
     stores_cursor = db.stores.find({"store_num": {"$in": store_nums}})
-    stores = await stores_cursor.to_list(length=1000)
+    stores = await stores_cursor.to_list(length=2000)
     store_map = {s["store_num"]: s["store_name"] for s in stores}
 
     product_details_cursor = db.products.find(
@@ -202,7 +138,7 @@ async def get_product(search: str = Query(...)):
         {"product_num": 1, "product_name": 1, "product_brand": 1,
          "product_link": 1, "image_url": 1, "category_path": 1}
     )
-    product_details = await product_details_cursor.to_list(length=1000)
+    product_details = await product_details_cursor.to_list(length=2000)
     product_map = {p["product_num"]: p for p in product_details}
 
     response = []
@@ -221,7 +157,8 @@ async def get_product(search: str = Query(...)):
             "category_path": product.get("category_path", []),
             "latest_price": price["latest_price"],
             "latest_date": price["latest_date"],
-            "unit": price["unit"]
+            "unit": price["unit"],
+            "price_per_unit": price.get("price_per_unit")
         })
     return response
 
@@ -262,7 +199,7 @@ async def get_deals():
                 "latest_date": {"$first": "$date"},
                 "unit": {"$first": "$unit"}
             }}
-        ]).to_list(length=200)
+        ]).to_list(length=2000)
 
         price_map = {
             (p["_id"]["product_num"], p["_id"]["store_num"]): p for p in latest_prices
