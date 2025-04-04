@@ -53,25 +53,23 @@ async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
 
     try:
-        # Step 1: Vector Search
         similar_products = await db.products.aggregate([
             {
                 "$vectorSearch": {
                     "index": "vector_index",
                     "path": "embedding",
                     "queryVector": query_vector,
-                    "numCandidates": 300,
-                    "limit": 10
+                    "numCandidates": 1000,
+                    "limit": 600
                 }
             }
-        ]).to_list(length=10)
+        ]).to_list(length=600)
 
         if not similar_products:
             return []
 
         product_nums = [p["product_num"] for p in similar_products]
 
-        # Step 2: Get Latest Prices
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
             {"$sort": {"date": -1}},
@@ -81,15 +79,12 @@ async def semantic_search(query: str = Query(...)):
                 "latest_date": {"$first": "$date"},
                 "unit": {"$first": "$unit"}
             }}
-        ]).to_list(length=100)
+        ]).to_list(length=1000)
 
         store_nums = list({p["_id"]["store_num"] for p in latest_prices})
-
-        # Step 3: Store Info
-        stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=100)
+        stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=1000)
         store_map = {s["store_num"]: s.get("store_name", "Unknown Store") for s in stores}
 
-        # Step 4: Product Info
         product_details = await db.products.find(
             {"product_num": {"$in": product_nums}},
             {
@@ -98,27 +93,23 @@ async def semantic_search(query: str = Query(...)):
                 "product_brand": 1,
                 "product_link": 1,
                 "image_url": 1,
-                "description": 1,
                 "category_path": 1
             }
-        ).to_list(length=100)
+        ).to_list(length=1000)
         product_map = {p["product_num"]: p for p in product_details}
 
-        # Step 5: Load all price flags for those product+store combos
         price_flag_filter = {
             "$or": [
                 {"product_num": p["_id"]["product_num"], "store_num": p["_id"]["store_num"]}
                 for p in latest_prices
             ]
         }
-
-        price_flags = await db.price_flags.find(price_flag_filter).to_list(length=100)
+        price_flags = await db.price_flags.find(price_flag_filter).to_list(length=1000)
         flag_map = {
             (pf["product_num"], pf["store_num"]): pf
             for pf in price_flags
         }
 
-        # Step 6: Assemble Final Response
         response = []
         for price in latest_prices:
             pid = price["_id"]["product_num"]
@@ -134,12 +125,10 @@ async def semantic_search(query: str = Query(...)):
                 "product_brand": product.get("product_brand", "Unknown Brand"),
                 "product_link": product.get("product_link", ""),
                 "image_url": product.get("image_url", ""),
-                "description": product.get("description", ""),
                 "category_path": product.get("category_path", []),
                 "latest_price": price.get("latest_price"),
                 "latest_date": price.get("latest_date"),
                 "unit": price.get("unit"),
-                # 💡 Flags added here
                 "best_in_30d": flags.get("best_in_30d", False),
                 "best_in_90d": flags.get("best_in_90d", False),
                 "std_from_mean": flags.get("std_from_mean", None),
@@ -151,6 +140,7 @@ async def semantic_search(query: str = Query(...)):
     except Exception as e:
         print("❌ Semantic search failed:", str(e))
         raise HTTPException(status_code=500, detail="Internal server error during semantic search.")
+
 
 
 @router.get("/products/SemanticSearchClustered")
@@ -181,11 +171,10 @@ async def semantic_search_clustered(query: str = Query(...)):
         return {"error": str(e)}
 
 
-# Unused.  This was the previous search method
 @router.get("/products/GetProduct")
 async def get_product(search: str = Query(...)):
     products_cursor = db.products.find({"search_terms": search.lower()})
-    products = await products_cursor.to_list(length=100)
+    products = await products_cursor.to_list(length=600)
 
     if not products:
         return []
@@ -201,19 +190,19 @@ async def get_product(search: str = Query(...)):
             "latest_date": {"$first": "$date"},
             "unit": {"$first": "$unit"}
         }}
-    ]).to_list(length=100)
+    ]).to_list(length=1000)
 
     store_nums = list({p["_id"]["store_num"] for p in latest_prices})
     stores_cursor = db.stores.find({"store_num": {"$in": store_nums}})
-    stores = await stores_cursor.to_list(length=100)
+    stores = await stores_cursor.to_list(length=1000)
     store_map = {s["store_num"]: s["store_name"] for s in stores}
 
     product_details_cursor = db.products.find(
         {"product_num": {"$in": product_nums}},
         {"product_num": 1, "product_name": 1, "product_brand": 1,
-         "product_link": 1, "image_url": 1, "description": 1}
+         "product_link": 1, "image_url": 1, "category_path": 1}
     )
-    product_details = await product_details_cursor.to_list(length=100)
+    product_details = await product_details_cursor.to_list(length=1000)
     product_map = {p["product_num"]: p for p in product_details}
 
     response = []
@@ -229,9 +218,81 @@ async def get_product(search: str = Query(...)):
             "product_brand": product.get("product_brand", "Unknown Brand"),
             "product_link": product.get("product_link", ""),
             "image_url": product.get("image_url", ""),
-            "description": product.get("description", ""),
+            "category_path": product.get("category_path", []),
             "latest_price": price["latest_price"],
             "latest_date": price["latest_date"],
             "unit": price["unit"]
         })
     return response
+
+@router.get("/products/GetDeals")
+async def get_deals():
+    try:
+        # Step 1: Get all price flags sorted by discount
+        top_flags = await db.price_flags.find(
+            {"discount_percent": {"$ne": None}}
+        ).sort("discount_percent", -1).limit(100).to_list(length=100)
+
+        if not top_flags:
+            return []
+
+        combos = [(pf["product_num"], pf["store_num"]) for pf in top_flags]
+        product_nums = [p for p, _ in combos]
+        store_nums = [s for _, s in combos]
+
+        # Step 2: Product details
+        products = await db.products.find(
+            {"product_num": {"$in": product_nums}},
+            {"product_num": 1, "product_name": 1, "product_brand": 1,
+             "product_link": 1, "image_url": 1, "category_path": 1}
+        ).to_list(length=100)
+        product_map = {p["product_num"]: p for p in products}
+
+        # Step 3: Store info
+        stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=100)
+        store_map = {s["store_num"]: s.get("store_name", "Unknown Store") for s in stores}
+
+        # Step 4: Get latest prices
+        latest_prices = await db.prices.aggregate([
+            {"$match": {"product_num": {"$in": product_nums}}},
+            {"$sort": {"date": -1}},
+            {"$group": {
+                "_id": {"product_num": "$product_num", "store_num": "$store_num"},
+                "latest_price": {"$first": "$amount"},
+                "latest_date": {"$first": "$date"},
+                "unit": {"$first": "$unit"}
+            }}
+        ]).to_list(length=200)
+
+        price_map = {
+            (p["_id"]["product_num"], p["_id"]["store_num"]): p for p in latest_prices
+        }
+
+        # Step 5: Final assemble
+        deals = []
+        for pf in top_flags:
+            pid, sid = pf["product_num"], pf["store_num"]
+            product = product_map.get(pid, {})
+            store = store_map.get(sid, "Unknown Store")
+            price = price_map.get((pid, sid), {})
+
+            deals.append({
+                "product_num": pid,
+                "store_num": sid,
+                "store_name": store,
+                "product_name": product.get("product_name", ""),
+                "product_brand": product.get("product_brand", ""),
+                "product_link": product.get("product_link", ""),
+                "image_url": product.get("image_url", ""),
+                "category_path": product.get("category_path", []),
+                "latest_price": price.get("latest_price"),
+                "latest_date": price.get("latest_date"),
+                "unit": price.get("unit"),
+                "discount_percent": pf["discount_percent"]
+            })
+
+        return deals
+
+    except Exception as e:
+        print("❌ GetDeals failed:", str(e))
+        raise HTTPException(status_code=500, detail="Failed to get top deals.")
