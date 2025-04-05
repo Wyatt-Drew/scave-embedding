@@ -1,6 +1,11 @@
-fastapi
-uvicorn
-motor
-python-dotenv
-sentence-transformers
-
+fastapi==0.95.2
+uvicorn==0.22.0
+sentence-transformers==2.2.2
+transformers==4.30.2
+torch==2.0.1
+pydantic==1.10.12
+scikit-learn==1.2.2
+numpy==1.24.4
+motor==3.1.2
+pymongo==4.3.3
+python-dotenv==1.0.0
