@@ -196,28 +196,56 @@ async def get_product(search: str = Query(...)):
 @router.get("/products/GetDeals")
 async def get_deals():
     try:
-        # Step 1: Get all price flags sorted by discount
+        # Step 1: Get all price flags with a discount
         all_flags = await db.price_flags.find(
             {"discount_percent": {"$ne": None}}
-        ).sort("discount_percent", -1).limit(500).to_list(length=500)
+        ).limit(1000).to_list(length=1000)
 
         if not all_flags:
             return []
 
-        # Step 2: Pick best discount per product_num
-        best_flag_map = {}
-        for pf in all_flags:
-            pid = pf["product_num"]
-            if pid not in best_flag_map or pf["discount_percent"] > best_flag_map[pid]["discount_percent"]:
-                best_flag_map[pid] = pf
-
-        top_flags = list(best_flag_map.values())
-
-        combos = [(pf["product_num"], pf["store_num"]) for pf in top_flags]
+        # Step 2: Pull all relevant price data
+        combos = [(pf["product_num"], pf["store_num"]) for pf in all_flags]
         product_nums = [p for p, _ in combos]
         store_nums = [s for _, s in combos]
 
-        # Step 3: Product details (fix was here)
+        latest_prices = await db.prices.aggregate([
+            {"$match": {"product_num": {"$in": product_nums}}},
+            {"$sort": {"date": -1}},
+            {"$group": {
+                "_id": {"product_num": "$product_num", "store_num": "$store_num"},
+                "latest_price": {"$first": "$amount"},
+                "latest_date": {"$first": "$date"},
+                "unit": {"$first": "$unit"},
+                "price_per_unit": {"$first": "$price_per_unit"}
+            }}
+        ]).to_list(length=2000)
+
+        price_map = {(p["_id"]["product_num"], p["_id"]["store_num"]): p for p in latest_prices}
+
+        # Step 3: Select the lowest price per product
+        best_flag_map = {}
+        for pf in all_flags:
+            pid, sid = pf["product_num"], pf["store_num"]
+            price = price_map.get((pid, sid))
+            if not price:
+                continue
+
+            price_val = price.get("price_per_unit") or price.get("latest_price")
+            if price_val is None:
+                continue
+
+            if pid not in best_flag_map or price_val < best_flag_map[pid][1]:
+                best_flag_map[pid] = (pf, price_val)
+
+        # Extract and sort by discount_percent
+        top_flags = [pair[0] for pair in best_flag_map.values()]
+        top_flags.sort(key=lambda pf: pf.get("discount_percent", 0), reverse=True)
+
+        # Step 4: Get product details
+        product_nums = [pf["product_num"] for pf in top_flags]
+        store_nums = [pf["store_num"] for pf in top_flags]
+
         products = await db.products.find(
             {"product_num": {"$in": product_nums}},
             {
@@ -228,31 +256,13 @@ async def get_deals():
                 "image_url": 1,
                 "category_path": 1
             }
-        ).to_list(length=len(product_nums))  # ✅ pull all needed products
-
+        ).to_list(length=len(product_nums))
         product_map = {p["product_num"]: p for p in products}
 
-        # Step 4: Store info (fix also here)
         stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=len(store_nums))
         store_map = {s["store_num"]: s.get("store_name", "Unknown Store") for s in stores}
 
-        # Step 5: Get latest prices
-        latest_prices = await db.prices.aggregate([
-            {"$match": {"product_num": {"$in": product_nums}}},
-            {"$sort": {"date": -1}},
-            {"$group": {
-                "_id": {"product_num": "$product_num", "store_num": "$store_num"},
-                "latest_price": {"$first": "$amount"},
-                "latest_date": {"$first": "$date"},
-                "unit": {"$first": "$unit"}
-            }}
-        ]).to_list(length=2000)
-
-        price_map = {
-            (p["_id"]["product_num"], p["_id"]["store_num"]): p for p in latest_prices
-        }
-
-        # Step 6: Assemble response
+        # Step 5: Assemble final deals
         deals = []
         for pf in top_flags:
             pid, sid = pf["product_num"], pf["store_num"]
@@ -260,7 +270,7 @@ async def get_deals():
             price = price_map.get((pid, sid))
 
             if not product or not price:
-                continue  # skip if missing product or price info
+                continue
 
             deals.append({
                 "product_num": pid,
@@ -282,3 +292,5 @@ async def get_deals():
     except Exception as e:
         print("❌ GetDeals failed:", str(e))
         raise HTTPException(status_code=500, detail="Failed to get top deals.")
+
+
