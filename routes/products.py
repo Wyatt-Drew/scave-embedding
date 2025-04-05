@@ -21,10 +21,10 @@ async def semantic_search(query: str = Query(...)):
                     "path": "embedding",
                     "queryVector": query_vector,
                     "numCandidates": 2000,
-                    "limit": 1200
+                    "limit": 100
                 }
             }
-        ]).to_list(length=1200)
+        ]).to_list(length=100)
 
         if not similar_products:
             return []
@@ -57,7 +57,7 @@ async def semantic_search(query: str = Query(...)):
                 "image_url": 1,
                 "category_path": 1
             }
-        ).to_list(length=2000)
+        ).to_list(length=100)
         product_map = {p["product_num"]: p for p in product_details}
 
         price_flag_filter = {
@@ -126,7 +126,7 @@ async def get_product(search: str = Query(...)):
             "unit": {"$first": "$unit"},
             "price_per_unit": {"$first": "$price_per_unit"}
         }}
-    ]).to_list(length=1000)
+    ]).to_list(length=100)
 
     store_nums = list({p["_id"]["store_num"] for p in latest_prices})
     stores_cursor = db.stores.find({"store_num": {"$in": store_nums}})
