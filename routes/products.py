@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Query
 from db import get_db
 from sentence_transformers import SentenceTransformer
-from collections import Counter
+from collections import OrderedDict
+from operator import itemgetter
 import re
 
 router = APIRouter()
@@ -25,11 +26,13 @@ async def semantic_search(query: str = Query(...)):
                 }
             }
         ]).to_list(length=1200)
-
+        
         if not similar_products:
             return []
+        similar_products.sort(key=itemgetter("score"), reverse=True)
 
-        product_nums = [p["product_num"] for p in similar_products]
+        product_nums = list(OrderedDict.fromkeys(p["product_num"] for p in similar_products))
+        product_nums = product_nums[:100]
 
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
@@ -110,6 +113,13 @@ async def semantic_search(query: str = Query(...)):
 async def get_product(search: str = Query(...)):
     products_cursor = db.products.find({"search_terms": search.lower()})
     products = await products_cursor.to_list(length=600)
+    product_map = {}
+    for p in products:
+        if p["product_num"] not in product_map:
+            product_map[p["product_num"]] = p
+        if len(product_map) >= 100:
+            break
+    products = list(product_map.values())
 
     if not products:
         return []
