@@ -196,10 +196,10 @@ async def get_product(search: str = Query(...)):
 @router.get("/products/GetDeals")
 async def get_deals():
     try:
-        # Step 1: Get all discount flags
+        # Step 1: Get all price flags sorted by discount
         all_flags = await db.price_flags.find(
             {"discount_percent": {"$ne": None}}
-        ).sort("discount_percent", -1).limit(500).to_list(length=500)  # pull more to ensure enough after filtering
+        ).sort("discount_percent", -1).limit(500).to_list(length=500)
 
         if not all_flags:
             return []
@@ -217,16 +217,23 @@ async def get_deals():
         product_nums = [p for p, _ in combos]
         store_nums = [s for _, s in combos]
 
-        # Step 3: Product details
+        # Step 3: Product details (fix was here)
         products = await db.products.find(
             {"product_num": {"$in": product_nums}},
-            {"product_num": 1, "product_name": 1, "product_brand": 1,
-             "product_link": 1, "image_url": 1, "category_path": 1}
-        ).to_list(length=100)
+            {
+                "product_num": 1,
+                "product_name": 1,
+                "product_brand": 1,
+                "product_link": 1,
+                "image_url": 1,
+                "category_path": 1
+            }
+        ).to_list(length=len(product_nums))  # ✅ pull all needed products
+
         product_map = {p["product_num"]: p for p in products}
 
-        # Step 4: Store info
-        stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=100)
+        # Step 4: Store info (fix also here)
+        stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=len(store_nums))
         store_map = {s["store_num"]: s.get("store_name", "Unknown Store") for s in stores}
 
         # Step 5: Get latest prices
@@ -249,14 +256,16 @@ async def get_deals():
         deals = []
         for pf in top_flags:
             pid, sid = pf["product_num"], pf["store_num"]
-            product = product_map.get(pid, {})
-            store = store_map.get(sid, "Unknown Store")
-            price = price_map.get((pid, sid), {})
+            product = product_map.get(pid)
+            price = price_map.get((pid, sid))
+
+            if not product or not price:
+                continue  # skip if missing product or price info
 
             deals.append({
                 "product_num": pid,
                 "store_num": sid,
-                "store_name": store,
+                "store_name": store_map.get(sid, "Unknown Store"),
                 "product_name": product.get("product_name", ""),
                 "product_brand": product.get("product_brand", ""),
                 "product_link": product.get("product_link", ""),
