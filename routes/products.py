@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Query
 from db import get_db
 from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 from collections import Counter
 import re
 
@@ -12,9 +14,11 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
+    q_vec_np = np.array(query_vector).reshape(1, -1)
 
     try:
-        similar_products = await db.products.aggregate([
+        # Step 1: Vector Search (Initial Candidates)
+        similar_products_raw = await db.products.aggregate([
             {
                 "$vectorSearch": {
                     "index": "vector_index",
@@ -23,14 +27,40 @@ async def semantic_search(query: str = Query(...)):
                     "numCandidates": 2000,
                     "limit": 100
                 }
+            },
+            {
+                "$project": {
+                    "product_num": 1,
+                    "embedding": 1
+                }
             }
         ]).to_list(length=100)
 
-        if not similar_products:
+        if not similar_products_raw:
             return []
 
-        product_nums = [p["product_num"] for p in similar_products]
+        # Step 2: Re-score by Cosine Similarity
+        for doc in similar_products_raw:
+            emb = np.array(doc["embedding"]).reshape(1, -1)
+            sim = cosine_similarity(q_vec_np, emb)[0][0]
+            doc["similarity"] = sim
 
+        # Step 3: Dynamic Filtering
+        similarities = [doc["similarity"] for doc in similar_products_raw]
+        mean_sim = np.mean(similarities)
+        std_sim = np.std(similarities)
+        threshold = max(0.40, mean_sim - 0.5 * std_sim)  # Adaptive
+
+        filtered_products = [doc for doc in similar_products_raw if doc["similarity"] >= threshold]
+
+        # Fallback: If filtering is too aggressive, take top 30 regardless
+        if len(filtered_products) < 30:
+            filtered_products = sorted(similar_products_raw, key=lambda d: d["similarity"], reverse=True)[:30]
+
+        # Step 4: Extract product numbers
+        product_nums = [p["product_num"] for p in filtered_products]
+
+        # Step 5: Pull latest prices
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
             {"$sort": {"date": -1}},
@@ -72,6 +102,7 @@ async def semantic_search(query: str = Query(...)):
             for pf in price_flags
         }
 
+        # Step 6: Construct Response
         response = []
         for price in latest_prices:
             pid = price["_id"]["product_num"]
