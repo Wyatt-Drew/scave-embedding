@@ -196,19 +196,28 @@ async def get_product(search: str = Query(...)):
 @router.get("/products/GetDeals")
 async def get_deals():
     try:
-        # Step 1: Get all price flags sorted by discount
-        top_flags = await db.price_flags.find(
+        # Step 1: Get all discount flags
+        all_flags = await db.price_flags.find(
             {"discount_percent": {"$ne": None}}
-        ).sort("discount_percent", -1).limit(100).to_list(length=100)
+        ).sort("discount_percent", -1).limit(500).to_list(length=500)  # pull more to ensure enough after filtering
 
-        if not top_flags:
+        if not all_flags:
             return []
+
+        # Step 2: Pick best discount per product_num
+        best_flag_map = {}
+        for pf in all_flags:
+            pid = pf["product_num"]
+            if pid not in best_flag_map or pf["discount_percent"] > best_flag_map[pid]["discount_percent"]:
+                best_flag_map[pid] = pf
+
+        top_flags = list(best_flag_map.values())
 
         combos = [(pf["product_num"], pf["store_num"]) for pf in top_flags]
         product_nums = [p for p, _ in combos]
         store_nums = [s for _, s in combos]
 
-        # Step 2: Product details
+        # Step 3: Product details
         products = await db.products.find(
             {"product_num": {"$in": product_nums}},
             {"product_num": 1, "product_name": 1, "product_brand": 1,
@@ -216,11 +225,11 @@ async def get_deals():
         ).to_list(length=100)
         product_map = {p["product_num"]: p for p in products}
 
-        # Step 3: Store info
+        # Step 4: Store info
         stores = await db.stores.find({"store_num": {"$in": store_nums}}).to_list(length=100)
         store_map = {s["store_num"]: s.get("store_name", "Unknown Store") for s in stores}
 
-        # Step 4: Get latest prices
+        # Step 5: Get latest prices
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
             {"$sort": {"date": -1}},
@@ -236,7 +245,7 @@ async def get_deals():
             (p["_id"]["product_num"], p["_id"]["store_num"]): p for p in latest_prices
         }
 
-        # Step 5: Final assemble
+        # Step 6: Assemble response
         deals = []
         for pf in top_flags:
             pid, sid = pf["product_num"], pf["store_num"]
