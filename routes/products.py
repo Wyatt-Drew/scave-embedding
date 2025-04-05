@@ -20,26 +20,16 @@ async def semantic_search(query: str = Query(...)):
                     "index": "vector_index",
                     "path": "embedding",
                     "queryVector": query_vector,
-                    "numCandidates": 300,
-                    "limit": 150
+                    "numCandidates": 2000,
+                    "limit": 1200
                 }
             }
-        ]).to_list(length=150)
+        ]).to_list(length=1200)
 
-        # Sort by relevance (score), safely
-        similar_products.sort(key=lambda x: x.get("score", 0), reverse=True)
+        if not similar_products:
+            return []
 
-        # Optional: log some insight
-        print(f"🔍 Retrieved {len(similar_products)} vector results")
-        print(f"📉 Lowest score: {min(p.get('score', 0) for p in similar_products):.4f}")
-
-        # Filter out low-score results
-        similar_products = [p for p in similar_products if p.get("score", 0) >= 0.4]
-
-        # Keep only top 100 unique product_nums
-        from collections import OrderedDict
-        product_nums = list(OrderedDict.fromkeys(p["product_num"] for p in similar_products))
-        product_nums = product_nums[:100]
+        product_nums = [p["product_num"] for p in similar_products]
 
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
@@ -124,8 +114,7 @@ async def get_product(search: str = Query(...)):
     if not products:
         return []
 
-    product_nums = list(OrderedDict.fromkeys(p["product_num"] for p in products))
-    product_nums = product_nums[:100]
+    product_nums = [p["product_num"] for p in products]
 
     latest_prices = await db.prices.aggregate([
         {"$match": {"product_num": {"$in": product_nums}}},
