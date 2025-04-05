@@ -3,6 +3,8 @@ from db import get_db
 from sentence_transformers import SentenceTransformer
 from collections import OrderedDict
 from operator import itemgetter
+from fastapi import HTTPException
+
 import re
 
 router = APIRouter()
@@ -29,7 +31,11 @@ async def semantic_search(query: str = Query(...)):
         
         if not similar_products:
             return []
-        similar_products.sort(key=itemgetter("score"), reverse=True)
+        similar_products.sort(key=lambda x: x.get("score", 0), reverse=True)
+        # Filter out low-score garbage
+        similar_products = [p for p in similar_products if p.get("score", 0) >= 0.4]
+
+
 
         product_nums = list(OrderedDict.fromkeys(p["product_num"] for p in similar_products))
         product_nums = product_nums[:100]
