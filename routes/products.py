@@ -205,12 +205,27 @@ async def get_product(search: str = Query(...)):
     product_details = await product_details_cursor.to_list(length=2000)
     product_map = {p["product_num"]: p for p in product_details}
 
-    # Step 5: Construct response
+    # Step 5: Get flags for each (product_num, store_num)
+    price_flag_filter = {
+        "$or": [
+            {"product_num": p["_id"]["product_num"], "store_num": p["_id"]["store_num"]}
+            for p in latest_prices
+        ]
+    }
+    price_flags = await db.price_flags.find(price_flag_filter).to_list(length=1000)
+    flag_map = {
+        (pf["product_num"], pf["store_num"]): pf
+        for pf in price_flags
+    }
+
+    # Step 6: Construct response
     response = []
     for price in latest_prices:
         pid = price["_id"]["product_num"]
         sid = price["_id"]["store_num"]
         product = product_map.get(pid, {})
+        flags = flag_map.get((pid, sid), {})
+
         response.append({
             "product_num": pid,
             "store_num": sid,
@@ -223,8 +238,13 @@ async def get_product(search: str = Query(...)):
             "latest_price": price["latest_price"],
             "latest_date": price["latest_date"],
             "unit": price["unit"],
-            "price_per_unit": price.get("price_per_unit")
+            "price_per_unit": price.get("price_per_unit"),
+            "best_in_30d": flags.get("best_in_30d", False),
+            "best_in_90d": flags.get("best_in_90d", False),
+            "std_from_mean": flags.get("std_from_mean"),
+            "discount_percent": flags.get("discount_percent")
         })
+
     return response
 
 @router.get("/products/GetDeals")
