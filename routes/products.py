@@ -156,7 +156,7 @@ async def semantic_search(query: str = Query(...)):
 @router.get("/products/GetProduct")
 async def get_product(search: str = Query(...)):
     # Tokenize input: lowercase, remove non-word characters, split into keywords
-    tokens = re.findall(r'\w+', search.lower())
+    tokens = set(re.findall(r'\w+', search.lower()))
 
     if not tokens:
         return []
@@ -164,18 +164,27 @@ async def get_product(search: str = Query(...)):
     # Mongo query: match if ANY search_term contains ANY of the tokens
     query = {
         "search_terms": {
-            "$in": tokens
+            "$in": list(tokens)
         }
     }
 
     # Fetch matching products
-    products_cursor = db.products.find(query)
+    products_cursor = db.products.find(query, {
+        "product_num": 1,
+        "search_terms": 1  # needed for token overlap scoring
+    })
     products = await products_cursor.to_list(length=600)
 
     if not products:
         return []
 
-    product_nums = [p["product_num"] for p in products]
+    # Compute match score based on token overlap
+    product_token_score = {
+        p["product_num"]: len(tokens.intersection(set(p.get("search_terms", []))))
+        for p in products
+    }
+
+    product_nums = list(product_token_score.keys())
 
     # Step 2: Fetch latest prices
     latest_prices = await db.prices.aggregate([
@@ -205,7 +214,7 @@ async def get_product(search: str = Query(...)):
     product_details = await product_details_cursor.to_list(length=2000)
     product_map = {p["product_num"]: p for p in product_details}
 
-    # Step 5: Get flags for each (product_num, store_num)
+    # Step 5: Get price flags
     price_flag_filter = {
         "$or": [
             {"product_num": p["_id"]["product_num"], "store_num": p["_id"]["store_num"]}
@@ -218,15 +227,17 @@ async def get_product(search: str = Query(...)):
         for pf in price_flags
     }
 
-    # Step 6: Construct response
+    # Step 6: Build response with match_score
     response = []
     for price in latest_prices:
         pid = price["_id"]["product_num"]
         sid = price["_id"]["store_num"]
         product = product_map.get(pid, {})
         flags = flag_map.get((pid, sid), {})
+        match_score = product_token_score.get(pid, 0)
 
         response.append({
+            "match_score": match_score,  # temporary for sorting
             "product_num": pid,
             "store_num": sid,
             "store_name": store_map.get(sid, "Unknown Store"),
@@ -245,7 +256,12 @@ async def get_product(search: str = Query(...)):
             "discount_percent": flags.get("discount_percent")
         })
 
-    return response
+    # Step 7: Sort by match_score
+    sorted_response = sorted(response, key=lambda x: x["match_score"], reverse=True)
+    for r in sorted_response:
+        r.pop("match_score", None)
+
+    return sorted_response
 
 @router.get("/products/GetDeals")
 async def get_deals():
