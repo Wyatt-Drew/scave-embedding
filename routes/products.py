@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from db import get_db
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -11,13 +11,18 @@ db = get_db()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
+from fastapi import HTTPException, Query
+import re
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
 @router.get("/products/SemanticSearch")
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
     q_vec_np = np.array(query_vector).reshape(1, -1)
 
     try:
-        # Step 1: Vector Search (Initial Candidates)
+        # Step 1: Vector Search
         similar_products_raw = await db.products.aggregate([
             {
                 "$vectorSearch": {
@@ -31,6 +36,8 @@ async def semantic_search(query: str = Query(...)):
             {
                 "$project": {
                     "product_num": 1,
+                    "product_name": 1,
+                    "search_terms": 1,
                     "embedding": 1
                 }
             }
@@ -39,28 +46,27 @@ async def semantic_search(query: str = Query(...)):
         if not similar_products_raw:
             return []
 
-        # Step 2: Re-score by Cosine Similarity
+        # Tokenize query for keyword overlap
+        query_tokens = set(re.findall(r'\w+', query.lower()))
+
+        # Compute cosine similarity + keyword overlap hybrid score
         for doc in similar_products_raw:
             emb = np.array(doc["embedding"]).reshape(1, -1)
-            sim = cosine_similarity(q_vec_np, emb)[0][0]
-            doc["similarity"] = sim
+            cosine_sim = cosine_similarity(q_vec_np, emb)[0][0]
+            doc["cosine_similarity"] = cosine_sim
 
-        # Step 3: Dynamic Filtering
-        similarities = [doc["similarity"] for doc in similar_products_raw]
-        mean_sim = np.mean(similarities)
-        std_sim = np.std(similarities)
-        threshold = max(0.40, mean_sim - 0.5 * std_sim)  # Adaptive
+            name_tokens = set(re.findall(r'\w+', doc.get("product_name", "").lower()))
+            terms_tokens = set(doc.get("search_terms", []))
+            overlap_count = len(query_tokens & (name_tokens | terms_tokens))
 
-        filtered_products = [doc for doc in similar_products_raw if doc["similarity"] >= threshold]
+            doc["score"] = 0.85 * cosine_sim + 0.15 * (overlap_count / max(1, len(query_tokens)))
 
-        # Fallback: If filtering is too aggressive, take top 30 regardless
-        if len(filtered_products) < 30:
-            filtered_products = sorted(similar_products_raw, key=lambda d: d["similarity"], reverse=True)[:30]
+        # Sort by hybrid score
+        filtered_products = sorted(similar_products_raw, key=lambda d: d["score"], reverse=True)
+        top_docs = filtered_products[:30]
+        product_nums = [p["product_num"] for p in top_docs]
 
-        # Step 4: Extract product numbers
-        product_nums = [p["product_num"] for p in filtered_products]
-
-        # Step 5: Pull latest prices
+        # Step 2: Latest Prices
         latest_prices = await db.prices.aggregate([
             {"$match": {"product_num": {"$in": product_nums}}},
             {"$sort": {"date": -1}},
@@ -102,7 +108,7 @@ async def semantic_search(query: str = Query(...)):
             for pf in price_flags
         }
 
-        # Step 6: Construct Response
+        # Step 3: Assemble and sort final response
         response = []
         for price in latest_prices:
             pid = price["_id"]["product_num"]
@@ -110,7 +116,11 @@ async def semantic_search(query: str = Query(...)):
             product = product_map.get(pid, {})
             flags = flag_map.get((pid, sid), {})
 
+            doc = next((d for d in top_docs if d["product_num"] == pid), {})
+            score = doc.get("score", 0)
+
             response.append({
+                "score": score,  # temporary for sorting
                 "product_num": pid,
                 "store_num": sid,
                 "store_name": store_map.get(sid, "Unknown Store"),
@@ -126,10 +136,15 @@ async def semantic_search(query: str = Query(...)):
                 "best_in_30d": flags.get("best_in_30d", False),
                 "best_in_90d": flags.get("best_in_90d", False),
                 "std_from_mean": flags.get("std_from_mean", None),
-                "discount_percent": flags.get("discount_percent", None),
+                "discount_percent": flags.get("discount_percent", None)
             })
 
-        return response
+        # Final sort by score
+        sorted_response = sorted(response, key=lambda x: x["score"], reverse=True)
+        for r in sorted_response:
+            r.pop("score", None)
+
+        return sorted_response
 
     except Exception as e:
         print("❌ Semantic search failed:", str(e))
@@ -137,9 +152,24 @@ async def semantic_search(query: str = Query(...)):
 
 
 
+
 @router.get("/products/GetProduct")
 async def get_product(search: str = Query(...)):
-    products_cursor = db.products.find({"search_terms": search.lower()})
+    # Tokenize input: lowercase, remove non-word characters, split into keywords
+    tokens = re.findall(r'\w+', search.lower())
+
+    if not tokens:
+        return []
+
+    # Mongo query: match if ANY search_term contains ANY of the tokens
+    query = {
+        "search_terms": {
+            "$in": tokens
+        }
+    }
+
+    # Fetch matching products
+    products_cursor = db.products.find(query)
     products = await products_cursor.to_list(length=600)
 
     if not products:
@@ -147,6 +177,7 @@ async def get_product(search: str = Query(...)):
 
     product_nums = [p["product_num"] for p in products]
 
+    # Step 2: Fetch latest prices
     latest_prices = await db.prices.aggregate([
         {"$match": {"product_num": {"$in": product_nums}}},
         {"$sort": {"date": -1}},
@@ -159,11 +190,13 @@ async def get_product(search: str = Query(...)):
         }}
     ]).to_list(length=100)
 
+    # Step 3: Store details
     store_nums = list({p["_id"]["store_num"] for p in latest_prices})
     stores_cursor = db.stores.find({"store_num": {"$in": store_nums}})
     stores = await stores_cursor.to_list(length=2000)
     store_map = {s["store_num"]: s["store_name"] for s in stores}
 
+    # Step 4: Product details
     product_details_cursor = db.products.find(
         {"product_num": {"$in": product_nums}},
         {"product_num": 1, "product_name": 1, "product_brand": 1,
@@ -172,6 +205,7 @@ async def get_product(search: str = Query(...)):
     product_details = await product_details_cursor.to_list(length=2000)
     product_map = {p["product_num"]: p for p in product_details}
 
+    # Step 5: Construct response
     response = []
     for price in latest_prices:
         pid = price["_id"]["product_num"]
