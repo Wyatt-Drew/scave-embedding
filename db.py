@@ -67,7 +67,7 @@ async def semantic_search(query: str = Query(...)):
         return []
 
     product_nums = [p["product_num"] for p in similar_products]
-    print("🔗 Matching product_nums:", product_nums)
+    print("Matching product_nums:", product_nums)
 
     latest_prices = await db.prices.aggregate([
         {"$match": {"product_num": {"$in": product_nums}}},
