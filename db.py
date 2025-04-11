@@ -2,14 +2,11 @@ import motor.motor_asyncio
 import os
 from dotenv import load_dotenv
 
-# Load variables from .env (useful for local development)
 load_dotenv()
 
-# MongoDB connection string and DB name from environment
+# Load env variables
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
-
-# Validate environment variables
 if not MONGO_URI or not DB_NAME:
     raise ValueError("Missing MONGO_URI or DB_NAME environment variables.")
 
@@ -41,12 +38,12 @@ async def ping():
 async def semantic_search(query: str = Query(...)):
     query_vector = model.encode(query).tolist()
 
-    print("🔍 Incoming query:", query)
-    print("🔢 Query vector (first 5 dims):", query_vector[:5])
+    print("Incoming query:", query)
+    print("Query vector (first 5 dims):", query_vector[:5])
 
     total_products = await db.products.count_documents({})
     with_embeddings = await db.products.count_documents({"embedding": {"$exists": True}})
-    print(f"📦 Total products: {total_products}, with embeddings: {with_embeddings}")
+    print(f"Total products: {total_products}, with embeddings: {with_embeddings}")
 
     try:
         similar_products = await db.products.aggregate([
@@ -60,13 +57,13 @@ async def semantic_search(query: str = Query(...)):
                 }
             }
         ]).to_list(length=10)
-        print(f"✅ Vector search returned {len(similar_products)} results.")
+        print(f"Vector search returned {len(similar_products)} results.")
     except Exception as e:
-        print("❌ Vector search failed:", str(e))
+        print("Vector search failed:", str(e))
         return {"error": str(e)}
 
     if not similar_products:
-        print("⚠️ No similar products found.")
+        print("No similar products found.")
         return []
 
     product_nums = [p["product_num"] for p in similar_products]
@@ -112,5 +109,5 @@ async def semantic_search(query: str = Query(...)):
             "unit": price["unit"]
         })
 
-    print(f"🧾 Final response size: {len(response)}")
+    print(f"Final response size: {len(response)}")
     return response

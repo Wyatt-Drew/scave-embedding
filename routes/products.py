@@ -147,7 +147,7 @@ async def semantic_search(query: str = Query(...)):
         return sorted_response
 
     except Exception as e:
-        print("❌ Semantic search failed:", str(e))
+        print("Semantic search failed:", str(e))
         raise HTTPException(status_code=500, detail="Internal server error during semantic search.")
 
 
@@ -360,5 +360,5 @@ async def get_deals():
         return deals
 
     except Exception as e:
-        print("❌ GetDeals failed:", str(e))
+        print("GetDeals failed:", str(e))
         raise HTTPException(status_code=500, detail="Failed to get top deals.")
